@@ -1,0 +1,43 @@
+{
+    "PEA": [
+        "NPV",
+        "Net Present Value",
+        "AISC",
+        "All In Sustaining Cost",
+        "IRR",
+        "Mineral Resource",
+        "Mineral Reserve",
+        "Commercial Production",
+        "CAPEX",
+        "annually",
+        "USD/ounce",
+        "USD/oz",
+        "Capital Expenditure",
+        "average annual",
+        "gold Production",
+        "Annual Production",
+        "head grade",
+        "gold price",
+        "discount rate",
+        "cash flow",
+        "cash cost",
+        "per ounce",
+        "per oz",
+        "mine life",
+        "life of mine",
+        "mine plan",
+        "company",
+        "TSX",
+        "TSXV",
+        "NYSE",
+        "located"
+    ],
+    "10-K": [
+        "balance sheet",
+        "mineral resource estimate",
+        "cash flow",
+        "financial statement",
+        "financial results",
+        "company"
+    ]
+}
