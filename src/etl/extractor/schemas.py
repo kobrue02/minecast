@@ -41,8 +41,8 @@ class DrillHoleResult(BaseModel):
     
     @field_validator('intercept_length')
     def check_intercept_length(cls, v, values):
-        if 'from_depth' in values and 'to_depth' in values:
-            calculated = values['to_depth'] - values['from_depth']
+        if values.data.get('from_depth') is not None and values.data.get('to_depth') is not None:
+            calculated = values.data['to_depth'] - values.data['from_depth']
             if abs(v - calculated) > 0.1:  # Allow for small rounding differences
                 raise ValueError(f"Intercept length {v} doesn't match from-to difference {calculated}")
         return v
@@ -184,7 +184,6 @@ class Corp10K(BaseModel):
     total_liabilities: float = Field(..., description="Total liabilities in USD")
     revenue: float = Field(..., description="Revenue in USD")
     net_income: float = Field(..., description="Net income in USD")
-    earnings_per_share: float = Field(..., description="Earnings per share in USD")
     cash_and_equivalents: float = Field(..., description="Cash and cash equivalents in USD")
     total_long_term_debt: float = Field(..., description="Total long term debt in USD")
 
@@ -201,7 +200,82 @@ class PFSRelease(BaseModel):
     average_diluted_head_grade: float = Field(..., description="Average diluted head grade in g/t")
     total_life_of_mine: float = Field(..., description="Total mine life in years")
     commercial_production_start_date: str = Field(..., description="The expected date of commercial production")
-    #mineral_reserve_indicated: float = Field(..., description="Mineral reserve indicated in ounces")
-    #mineral_reserve_inferred: float = Field(..., description="Mineral reserve inferred in ounces")
+
+
+class ReportType(str, Enum):
+    SK1300 = "S-K 1300 Technical Report Summary"
+    NI43101 = "NI 43-101 Technical Report"
+    PEA = "Preliminary Economic Assessment"
+    PFS = "Pre-Feasibility Study"
+    FS = "Feasibility Study"
+    OTHER = "Other Technical Report"
+
+class EconomicSensitivityItem(BaseModel):
+    parameter: Optional[str] = Field(None, description="Parameter varied (e.g., Gold Price, Exchange Rate, Operating Cost, Capital Cost)")
+    change_percentage: Optional[float] = Field(None, description="Percentage change in the parameter")
+    impact_on_npv_usd: Optional[float] = Field(None, description="Impact on NPV in USD due to the parameter change")
+    impact_on_irr_percent: Optional[float] = Field(None, description="Impact on IRR in percent due to the parameter change")
+
+class TechnicalReportData(BaseModel):
+    # General Information
+    report_title: Optional[str] = Field(None, description="Full title of the technical report")
+    report_type: Optional[ReportType] = Field(None, description="Type of the technical report (e.g., S-K 1300, PEA, FS)")
+    company_name: Optional[str] = Field(None, description="Name of the mining company or issuer")
+    project_name: Optional[str] = Field(None, description="Name of the project or property")
+    project_location: Optional[str] = Field(None, description="Geographic location of the project (e.g., State, Country)")
+    effective_date: Optional[str] = Field(None, description="Effective date of the data and conclusions in the report (e.g., YYYY-MM-DD)")
+    report_date: Optional[str] = Field(None, description="Publication date of the report (e.g., YYYY-MM-DD)")
+    prepared_for: Optional[str] = Field(None, description="Entity for whom the report was prepared, if different from company_name")
+    prepared_by: Optional[str] = Field(None, description="Consulting firm or individuals who prepared the report")
+    qualified_persons: Optional[List[Dict[str, str]]] = Field(None, description="List of qualified persons (QPs), their affiliations, and responsibilities. E.g., [{'name': 'John Doe', 'affiliation': 'ABC Mining Consultants', 'responsibility': 'Geology'}]")
+
+    # Executive Summary / Key Highlights
+    executive_summary: Optional[str] = Field(None, description="Brief overview of the project and key findings of the report.")
+    key_conclusions: Optional[List[str]] = Field(None, description="Main conclusions drawn from the study.")
+    key_recommendations: Optional[List[str]] = Field(None, description="Key recommendations for future work or project development.")
+
+    # Mineral Resource Estimates
+    mineral_resources: Optional[List[ResourceEstimate]] = Field(None, description="Detailed mineral resource estimates. Reuses existing ResourceEstimate schema.")
+    
+    # Mineral Reserve Estimates
+    mineral_reserves: Optional[List[ResourceEstimate]] = Field(None, description="Detailed mineral reserve estimates. Reuses existing ResourceEstimate schema; category field distinguishes reserves.")
+
+    # Economic Analysis
+    study_base_case_description: Optional[str] = Field(None, description="Description of the base case scenario for economic analysis.")
+    currency_used: Optional[str] = Field(None, description="Currency used for economic figures (e.g., USD, CAD). LLM should specify if known, typically USD.")
+    discount_rate_percent: Optional[float] = Field(None, description="Discount rate used for NPV calculations (in percentage).")
+    
+    npv_pre_tax_usd: Optional[float] = Field(None, description="Pre-tax Net Present Value (NPV) in USD.")
+    npv_post_tax_usd: Optional[float] = Field(None, description="Post-tax Net Present Value (NPV) in USD.")
+    irr_pre_tax_percent: Optional[float] = Field(None, description="Pre-tax Internal Rate of Return (IRR) in percentage.")
+    irr_post_tax_percent: Optional[float] = Field(None, description="Post-tax Internal Rate of Return (IRR) in percentage.")
+    payback_period_years_post_tax: Optional[float] = Field(None, description="Post-tax payback period in years.")
+    
+    initial_capital_cost_usd: Optional[float] = Field(None, description="Total initial capital expenditure (CAPEX) in USD.")
+    sustaining_capital_cost_usd: Optional[float] = Field(None, description="Total life-of-mine sustaining capital expenditure in USD.")
+    closure_reclamation_cost_usd: Optional[float] = Field(None, description="Estimated closure and reclamation costs in USD.")
+    
+    life_of_mine_years: Optional[float] = Field(None, description="Life of Mine (LOM) in years.")
+    mining_method: Optional[str] = Field(None, description="Primary mining method(s) (e.g., Open Pit, Underground Cut-and-Fill).")
+    processing_method: Optional[str] = Field(None, description="Primary processing method(s) (e.g., CIL, Heap Leach, Flotation).")
+    average_annual_throughput_tonnes: Optional[float] = Field(None, description="Average annual plant throughput in tonnes per year.")
+    average_recovery_percent: Optional[Dict[str, float]] = Field(None, description="Average metallurgical recovery rates by mineral (e.g., {'gold': 90.5, 'silver': 85.0}).")
+    
+    average_annual_production: Optional[List[Dict[str, Union[str, float]]]] = Field(None, description="Average annual production of payable metals (e.g., [{'mineral': 'gold', 'amount': 100000, 'unit': 'ounces'}, {'mineral': 'silver', 'amount': 500000, 'unit': 'ounces'}]).")
+    
+    operating_cost_summary: Optional[Dict[str, float]] = Field(None, description="Breakdown of operating costs per tonne processed (e.g., {'mining_usd_per_tonne': 15.0, 'processing_usd_per_tonne': 20.0, 'ga_usd_per_tonne': 5.0}).")
+    total_operating_cost_per_tonne_usd: Optional[float] = Field(None, description="Total operating cost (OPEX) in USD per tonne processed.")
+    aisc_usd_per_ounce: Optional[Dict[str, float]] = Field(None, description="All-In Sustaining Cost (AISC) in USD per ounce (or other unit) for primary payable metal(s), e.g. {'gold_oz': 950}.")
+
+    commodity_price_assumptions: Optional[List[Dict[str, Union[str, float]]]] = Field(None, description="Commodity price assumptions used in the economic model (e.g., [{'mineral': 'gold', 'price': 1800, 'unit': 'USD/oz'}, {'mineral': 'silver', 'price': 22, 'unit': 'USD/oz'}]).")
+
+    economic_sensitivities: Optional[List[EconomicSensitivityItem]] = Field(None, description="Results of economic sensitivity analysis to various parameters.")
+    
+    infrastructure_summary: Optional[str] = Field(None, description="Summary of existing and planned infrastructure (power, water, roads, etc.).")
+    environmental_social_governance_summary: Optional[str] = Field(None, description="Summary of ESG considerations, permitting status, and community relations.")
+    risks_and_opportunities: Optional[List[Dict[str, str]]] = Field(None, description="Key risks and opportunities identified (e.g., [{'type': 'risk', 'description': 'Permitting delays'}, {'type': 'opportunity', 'description': 'Exploration upside'}]).")
+
+    class Config:
+        extra = 'ignore'
 
     

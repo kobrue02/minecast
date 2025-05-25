@@ -16,3 +16,5 @@ class NewsType(str, Enum):
     ACQUISITION = "acquisition"
     JOINT_VENTURE = "joint venture"
     OTHER = "other"
+    SK1300 = "S-K 1300 technical report"
+    TRS = "technical report summary"

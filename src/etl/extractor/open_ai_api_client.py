@@ -12,7 +12,8 @@ from .schemas import (
     CorporateUpdateRelease,
     ProjectUpdateRelease,
     Corp10K,
-    PFSRelease
+    PFSRelease,
+    TechnicalReportData
 )
 from .types import NewsType
 
@@ -200,12 +201,25 @@ class OpenAIClient:
             NewsType.PROJECT: ProjectUpdateRelease,
             NewsType.CORPORATE: CorporateUpdateRelease,
             NewsType.R_10K: Corp10K,
-            NewsType.PFS: PFSRelease,
-            NewsType.PEA: PFSRelease, # change later
+            NewsType.FINANCIAL: PFSRelease, # Keep as is for now, or decide if TechnicalReportData is better
+            NewsType.PFS: TechnicalReportData,    # Updated
+            NewsType.PEA: TechnicalReportData,    # Updated
+            NewsType.FS: TechnicalReportData,     # Updated
+            NewsType.NI: TechnicalReportData,     # Updated
+            NewsType.SK1300: TechnicalReportData, # Newly added
+            NewsType.TRS: TechnicalReportData     # Added for Technical Report Summary
         }
-        schema = schema_map.get(news_type)
-        self.logger.info(f"Mapped {news_type} to schema: {schema.__name__}")
-        return schema
+        schema_model = schema_map.get(news_type)
+        if schema_model is None:
+            self.logger.error(f"No schema defined for NewsType: {news_type}. Defaulting to a generic approach or failing.")
+            # Fallback or error handling: For now, let's raise an error or return a very basic schema.
+            # This part depends on desired behavior for unmapped types.
+            # Forcing a failure if no schema is found ensures we explicitly map types.
+            raise ValueError(f"Schema not found for news type: {news_type}")
+
+        self.logger.info(f"Mapped {news_type} to schema: {schema_model.__name__}")
+        # The OpenAI API expects the Pydantic model itself for the `response_format` with `parse`
+        return schema_model
 
     def run(self, news_text: str, news_type: NewsType) -> Dict[str, Any]:
         """

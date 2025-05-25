@@ -238,7 +238,8 @@ class PDFLoader:
         pass
 
     def load_corporate_announcement(self, file_path: str = None) -> str:
-        pass
+        # fix later
+        return self.load_pfs(file_path)
 
     def load_pea(self, file_path: str = None) -> str:
         pass
