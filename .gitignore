@@ -6,3 +6,7 @@ __pycache__/
 *.xlsx
 *.csv
 *.pdf
+*.htm
+*.png
+downloaded_reports/
+node_modules/
