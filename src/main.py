@@ -23,7 +23,7 @@ load_dotenv()
 from src.retriever.edgar import Edgar
 from src.etl.pipeline import Pipeline
 from src.dashboard.viz import create_dashboard_visualization # Import the dashboard function
-# from etl.extractor.types import NewsType # Not directly needed here
+from src.etl.extractor.types import NewsType # Import NewsType enum
 
 # Configure logging
 logging.basicConfig(
@@ -241,13 +241,96 @@ def run_full_pipeline(ticker_symbol: str):
 
     logger.info(f"--- Pipeline finished for ticker: {ticker_symbol} ---")
 
+def process_single_file(file_path: str, ticker_symbol: str, news_type: NewsType = None):
+    """
+    Process a single PDF file through the ETL pipeline without using Edgar.
+    
+    Args:
+        file_path (str): Path to the PDF file to process
+        ticker_symbol (str): Stock ticker symbol for the file
+        news_type (NewsType, optional): Type of news/report to force. If None, will be classified automatically.
+    """
+    logger.info(f"--- Starting single file processing for {file_path} ---")
+    
+    if not os.path.exists(file_path):
+        logger.error(f"File not found: {file_path}")
+        return
+        
+    if not os.getenv("OPENAI_API_KEY"):
+        logger.error("OPENAI_API_KEY environment variable not set. The ETL Pipeline requires it to function.")
+        return
+        
+    # Create file info dictionary in the format expected by the pipeline
+    file_info = [{
+        'filepath': file_path,
+        'ticker': ticker_symbol
+    }]
+    
+    # Process the file using the ETL pipeline
+    etl_pipeline = Pipeline()
+    processed_results = etl_pipeline.run_all(
+        files_info=file_info,
+        news_type_override=news_type,  # Pass the NewsType enum directly
+        output_format="df",
+        include_financial_data=True
+    )
+    
+    if not processed_results or not processed_results[0] is not None:
+        logger.error("ETL Pipeline did not produce any processable data.")
+        return
+        
+    df_result = processed_results[0]
+    if df_result.empty or df_result.isna().all().all():
+        logger.error("ETL Pipeline produced empty or invalid data.")
+        return
+        
+    # Save the processed data as CSV
+    safe_ticker_filename = "".join(c if c.isalnum() else "_" for c in ticker_symbol)
+    output_dir = os.path.dirname(file_path)
+    type_suffix = f"_{news_type.name}" if news_type else ""
+    csv_filename = f"{safe_ticker_filename}{type_suffix}_direct_file_processed_data.csv"
+    csv_path = os.path.join(output_dir, csv_filename)
+    
+    try:
+        df_result.to_csv(csv_path, index=False)
+        logger.info(f"Successfully saved processed data to CSV: {csv_path}")
+    except Exception as e:
+        logger.error(f"Failed to save processed data to CSV: {e}")
+        
+    # Generate dashboard for the processed file
+    dashboard_image_filename = f"{safe_ticker_filename}{type_suffix}_direct_file_dashboard.png"
+    dashboard_image_path = os.path.join(output_dir, dashboard_image_filename)
+    
+    try:
+        create_dashboard_visualization(
+            df_row=df_result.iloc[0],
+            ticker=ticker_symbol,
+            output_image_path=dashboard_image_path
+        )
+        logger.info(f"Successfully generated dashboard at: {dashboard_image_path}")
+    except Exception as e:
+        logger.error(f"Failed to generate dashboard visualization: {e}", exc_info=True)
+    
+    logger.info(f"--- Finished processing file: {file_path} ---")
 
 def main():
     parser = argparse.ArgumentParser(description="Run the MineCast data processing and dashboard generation pipeline.")
-    parser.add_argument("--ticker",type=str, help="Stock ticker symbol (e.g., 'GOLD') to process.")
+    parser.add_argument("--ticker", type=str, help="Stock ticker symbol (e.g., 'GOLD') to process.")
+    parser.add_argument("--file", type=str, help="Path to a PDF file to process directly (skips Edgar crawling).")
+    parser.add_argument("--type", type=str, choices=[t.name for t in NewsType], 
+                       help="Force the type of news/report (e.g., 'PEA', 'FS', 'PFS'). If not provided, will be classified automatically.")
     args = parser.parse_args()
 
-    run_full_pipeline(args.ticker)
+    if args.file:
+        if not args.ticker:
+            logger.error("--ticker argument is required when using --file")
+            return
+        news_type = NewsType[args.type] if args.type else None
+        process_single_file(args.file, args.ticker, news_type)
+    elif args.ticker:
+        run_full_pipeline(args.ticker)
+    else:
+        parser.print_help()
 
 if __name__ == "__main__":
     main()

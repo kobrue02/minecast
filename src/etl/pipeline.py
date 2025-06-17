@@ -104,6 +104,7 @@ class Pipeline:
         article_title_for_classification = file_path # Fallback for title
         final_news_type: Optional[NewsType] = None
 
+        # First, determine the final news type from the override
         if isinstance(news_type_override, NewsType):
             final_news_type = news_type_override
         elif isinstance(news_type_override, str):
@@ -116,20 +117,18 @@ class Pipeline:
             pdf_loader = PDFLoader(file_path, read_only=True)
             article_title_for_classification = pdf_loader.get_title() or os.path.basename(file_path)
             
-            # Determine NewsType for PDF if not overridden
+            # Only classify if no news type was provided
             if not final_news_type:
                 try:
                     final_news_type = self.news_type_classifier.inference(article_title_for_classification)
                     self.logger.info(f"Classified PDF news type: {final_news_type} for title: '{article_title_for_classification}'")
                 except Exception as e:
                     self.logger.error(f"Error classifying PDF news type: {e}. Will attempt generic extraction.")
-                    # Potentially set a default or skip OpenAI if type is crucial and unknown
+                    return None  # Return None if classification fails and no type was provided
 
-            # Load PDF content based on (now potentially classified) news_type
+            # Load PDF content based on the news_type
             if final_news_type in [NewsType.PEA, NewsType.PFS, NewsType.FS, NewsType.NI, NewsType.SK1300]:
-                # Assuming PDFLoader has a method for more detailed extraction for technical docs
-                # or we just use a generic one. For now, let's assume load_pfs is good for these.
-                raw_text = pdf_loader.load_pfs() # Or a more generic `load_full_text()`
+                raw_text = pdf_loader.load_pfs()
             else:
                 raw_text = pdf_loader.load_corporate_announcement()
             
@@ -142,20 +141,9 @@ class Pipeline:
             self.logger.info("Processing HTM file.")
             try:
                 htm_processor = HtmProcessor(file_path)
-                # For SEC technical reports from Edgar, we directly assign the NewsType
-                # if final_news_type is already set (from edgar's doc_type), use it.
                 if not final_news_type:
-                    # This case should ideally not happen if Edgar.py always provides a type for HTM.
-                    # If it does, we might need a fallback or error.
-                    self.logger.warning(f"News type for HTM file {file_path} not provided by Edgar and not overridden. Cannot proceed with LLM extraction without a type.")
-                    # As a last resort, could try to classify based on title, but Edgar should be the source of truth for its files.
-                    # For now, if Edgar didn't give a type, and it wasn't overridden, we can't proceed.
-                    # Let's assume final_news_type IS set if it's an Edgar HTM.
-                    # The logic block above for news_type_override (string) handles mapping Edgar's type.
-                    # If it's still None here, it means Edgar's type was not mappable or not provided.
-                    # Defaulting to SK1300 is no longer appropriate without specific info.
-                    self.logger.error(f"Cannot determine NewsType for HTM {file_path} from Edgar output. Aborting processing for this file.")
-                    return None # Or raise an error
+                    self.logger.error(f"News type for HTM file {file_path} not provided and not overridden. Cannot proceed with LLM extraction without a type.")
+                    return None
                 
                 self.logger.info(f"Using NewsType for HTM: {final_news_type}")
                 text_content_for_llm = htm_processor.get_processed_content_for_llm()
@@ -172,13 +160,10 @@ class Pipeline:
             return None
         
         if not final_news_type:
-            self.logger.warning(f"News type could not be determined for {file_path}. Extraction might be suboptimal or fail.")
-            # Decide on a fallback: either attempt with a generic schema or return None/error
-            # For now, let's prevent calling OpenAI without a type/schema to avoid errors.
+            self.logger.error(f"News type could not be determined for {file_path}. Extraction cannot proceed without a type.")
             return None 
 
         self.logger.info(f"Cleaned text length for LLM: {len(text_content_for_llm)}. Title for classification: '{article_title_for_classification}'. Final NewsType: {final_news_type}")
-        # self.logger.debug(f"Text for LLM: \n {text_content_for_llm[:1000]}...") # Uncomment for debugging text sent to LLM
 
         try:
             structured_data_model = self.extractor.run(text_content_for_llm, news_type=final_news_type)
@@ -204,15 +189,14 @@ class Pipeline:
                 return df_output
             elif output_format == "json":
                 if df_output is not None:
-                    # Convert DataFrame to JSON records if it exists, else dump model directly
                     return df_output.to_dict(orient='records') 
-                else: # Should not happen if structured_data_model was valid
+                else:
                     return json.loads(structured_data_model.model_dump_json()) 
             else:
                 self.logger.warning(f"Unsupported output format: {output_format}. Returning Pydantic model.")
-                return structured_data_model # Return the Pydantic model itself
+                return structured_data_model
         
-        return structured_data_model # Default: return the Pydantic model instance
+        return structured_data_model
     
     def add_financial_data_to_df(self, df: pd.DataFrame, ticker) -> pd.DataFrame:
         """

@@ -1,12 +1,55 @@
-venv/
-temp/
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
 .env
-*.pyc
-*.xlsx
-*.csv
-*.pdf
-**/*.htm
-*.png
+.venv
+.python-version
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+temp/
 downloaded_reports/
+models/
+data/
+logs/
+
+# Generated files
+*.csv
+*.xlsx
+*.xls
+*.pdf
+*.htm
+*.html
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.svg
+*.json
+*.log
+*.out
+*.err
+
+# Node
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ScatterChart, Scatter, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { ScatterChart, Scatter, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LineChart, Line } from 'recharts';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -139,6 +139,9 @@ interface CompanyData {
   "operating_cost_summary.ore_haul_usd_per_tonne"?: number | null;
   commodity?: string | null;
   fileName?: string;
+  // New fields for yfinance data
+  total_cash?: number | null;
+  total_debt?: number | null;
 }
 
 const sampleData: CompanyData[] = [
@@ -255,53 +258,207 @@ const processCsvText = async (csvText: string, fileName?: string): Promise<Compa
 };
 
 export default function Dashboard() {
-  const [data, setData] = useState<CompanyData[]>([]); // Initialize with empty array
-  const [isLoading, setIsLoading] = useState<boolean>(true); // Loading state for initial data
-  const [error, setError] = useState<string | null>(null); // Error state for initial data
-  const [filter, setFilter] = useState('');
+  const [rawData, setRawData] = useState<CompanyData[]>([]);
+  const [filteredData, setFilteredData] = useState<CompanyData[]>([]);
+  const [selectedCompany, setSelectedCompany] = useState<CompanyData | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterType, setFilterType] = useState<string>("all");
+  const [filterCommodity, setFilterCommodity] = useState<string>("all");
+
+  // New state for table sorting
+  const [sortConfig, setSortConfig] = useState<{ key: keyof CompanyData | null; direction: 'ascending' | 'descending' } | null>(null);
+
+  // New state for column-specific filters
+  const [columnFilters, setColumnFilters] = useState<{ [key in keyof CompanyData]?: string }>({});
+
+  const [isLoading, setIsLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Effect to load default CSVs on mount
+  // New state for yfinance data for the selected company
+  const [marketData, setMarketData] = useState<{
+    market_cap?: number | null;
+    total_cash?: number | null;
+    total_debt?: number | null;
+    shares_outstanding?: number | null;
+  } | null>(null);
+
+  // New state for stock chart popup
+  const [showStockChartPopup, setShowStockChartPopup] = useState(false);
+  const [stockChartTicker, setStockChartTicker] = useState<string | null>(null);
+  const [stockChartData, setStockChartData] = useState<any[]>([]);
+  const [stockChartError, setStockChartError] = useState<string | null>(null);
+  const [stockChartLoading, setStockChartLoading] = useState<boolean>(false);
+
   useEffect(() => {
-    const loadDefaultData = async () => {
-      setIsLoading(true);
-      setError(null);
-      let allDefaultData: CompanyData[] = [];
-      // IMPORTANT: Adjust the path according to where your CSVs are within the `src` directory
-      // e.g., if they are in `src/reports_data/`, the path is `/src/reports_data/*_processed_dashboard_data.csv`
-      const reportModules = import.meta.glob('/src/reports_data/*_processed_dashboard_data.csv', { as: 'raw' });
+    loadDefaultData();
+  }, []);
 
-      console.log("Found report modules:", Object.keys(reportModules));
+  useEffect(() => {
+    let data = rawData;
 
-      for (const path in reportModules) {
-        try {
-          console.log("Loading default CSV:", path);
-          const csvText = await reportModules[path]();
-          const fileName = path.split('/').pop(); // Extract filename
-          const parsedData = await processCsvText(csvText, fileName);
-          allDefaultData = allDefaultData.concat(parsedData);
-        } catch (e) {
-          console.error("Error loading or processing default CSV:", path, e);
-          setError(prevError => prevError ? `${prevError}; Failed to load ${path}` : `Failed to load ${path}`);
+    // Apply global search term (for commodity)
+    if (searchTerm) {
+      data = data.filter(d => {
+        if (d && typeof d.commodity === 'string') {
+          return d.commodity.toLowerCase().includes(searchTerm.toLowerCase());
         }
+        return false;
+      });
+    }
+
+    // Apply global report type filter
+    if (filterType !== "all") {
+      data = data.filter(d => d.report_type === filterType);
+    }
+    // Apply global commodity filter (this might be redundant if searchTerm is used for commodity)
+    // If you want to keep this, ensure it works with searchTerm or clarify its purpose.
+    // For now, I'll assume searchTerm is the primary way to filter by commodity globally.
+    // if (filterCommodity !== "all") {
+    //   data = data.filter(d => d.commodity === filterCommodity);
+    // }
+
+    // Apply column-specific filters
+    Object.entries(columnFilters).forEach(([key, value]) => {
+      if (value) {
+        data = data.filter(d => {
+          const dValue = d[key as keyof CompanyData];
+          if (typeof dValue === 'string') {
+            return dValue.toLowerCase().includes(value.toLowerCase());
+          }
+          if (typeof dValue === 'number') {
+            return dValue.toString().toLowerCase().includes(value.toLowerCase());
+          }
+          return false;
+        });
       }
-      
-      if (allDefaultData.length === 0 && Object.keys(reportModules).length > 0) {
-          console.warn("Default CSVs were found and processed, but resulted in no valid data rows. Check console for warnings from processCsvText.");
-          // Optionally set sampleData if no default data is loaded and valid
-          // setData(sampleData);
-      } else if (allDefaultData.length > 0) {
-        setData(allDefaultData);
+    });
+
+    // Apply sorting
+    if (sortConfig !== null && sortConfig.key !== null) {
+      data.sort((a, b) => {
+        const aValue = a[sortConfig.key!];
+        const bValue = b[sortConfig.key!];
+
+        if (aValue === null || aValue === undefined) return 1;
+        if (bValue === null || bValue === undefined) return -1;
+
+        if (typeof aValue === 'string' && typeof bValue === 'string') {
+          const comparison = aValue.localeCompare(bValue);
+          return sortConfig.direction === 'ascending' ? comparison : -comparison;
+        }
+
+        if (typeof aValue === 'number' && typeof bValue === 'number') {
+          return sortConfig.direction === 'ascending' ? aValue - bValue : bValue - aValue;
+        }
+        
+        // Fallback for other types or mixed types (less likely with CompanyData structure)
+        if (aValue < bValue) {
+          return sortConfig.direction === 'ascending' ? -1 : 1;
+        }
+        if (aValue > bValue) {
+          return sortConfig.direction === 'ascending' ? 1 : -1;
+        }
+        return 0;
+      });
+    }
+
+    setFilteredData(data);
+  }, [rawData, searchTerm, filterType, filterCommodity, columnFilters, sortConfig]); // Added columnFilters and sortConfig to dependencies
+
+  // Fetch market data when a company is selected and has a ticker
+  useEffect(() => {
+    const fetchMarketData = async () => {
+      if (selectedCompany && selectedCompany.ticker) {
+        try {
+          // Ensure the port matches the one your Flask app is running on
+          const response = await fetch(`http://localhost:5001/market_data/${selectedCompany.ticker}`);
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const data = await response.json();
+          setMarketData(data);
+        } catch (error) {
+          console.error("Failed to fetch market data:", error);
+          setMarketData(null); // Reset or handle error appropriately
+        }
       } else {
-        console.log("No default CSVs found or no data extracted. Initializing with sample data or empty as per logic.");
-        // setData(sampleData); // Or keep it empty if that's preferred when no files are found
+        setMarketData(null); // Reset if no company selected or no ticker
       }
-      setIsLoading(false);
     };
 
-    loadDefaultData();
-  }, []); // Empty dependency array ensures this runs only on mount
+    fetchMarketData();
+  }, [selectedCompany]);
 
+  // useEffect to fetch historical stock data when stockChartTicker is set
+  useEffect(() => {
+    const fetchStockData = async () => {
+      if (stockChartTicker) {
+        setStockChartLoading(true);
+        setStockChartError(null);
+        let response;
+        try {
+          response = await fetch(`http://localhost:5001/historical_data/${stockChartTicker}?period=1y`);
+          const data = await response.json(); // Attempt to parse JSON regardless of response.ok for custom error messages
+
+          if (!response.ok) {
+            // If data.error exists, use it, otherwise use a default based on status
+            throw new Error(data.error || `HTTP error! status: ${response.status}`);
+          }
+          
+          const formattedData = data.map((item: any) => ({
+            ...item,
+            Date: item.Date 
+          }));
+          setStockChartData(formattedData);
+        } catch (error: any) {
+          console.error("Failed to fetch historical stock data:", error);
+          // error.message will now hopefully contain our custom backend error or the HTTP status error
+          setStockChartError(error.message || "Failed to load chart data. Check server logs.");
+          setStockChartData([]);
+        }
+        setStockChartLoading(false);
+      }
+    };
+
+    if (showStockChartPopup) { 
+        fetchStockData();
+    }
+  }, [stockChartTicker, showStockChartPopup]);
+
+  const loadDefaultData = async () => {
+    setIsLoading(true);
+    let allDefaultData: CompanyData[] = [];
+    // IMPORTANT: Adjust the path according to where your CSVs are within the `src` directory
+    // e.g., if they are in `src/reports_data/`, the path is `/src/reports_data/*_processed_dashboard_data.csv`
+    const reportModules = import.meta.glob('/src/reports_data/*_processed_dashboard_data.csv', { as: 'raw' });
+
+    console.log("Found report modules:", Object.keys(reportModules));
+
+    for (const path in reportModules) {
+      try {
+        console.log("Loading default CSV:", path);
+        const csvText = await reportModules[path]();
+        const fileName = path.split('/').pop(); // Extract filename
+        const parsedData = await processCsvText(csvText, fileName);
+        allDefaultData = allDefaultData.concat(parsedData);
+      } catch (e) {
+        console.error("Error loading or processing default CSV:", path, e);
+      }
+    }
+    
+    if (allDefaultData.length === 0 && Object.keys(reportModules).length > 0) {
+        console.warn("Default CSVs were found and processed, but resulted in no valid data rows. Check console for warnings from processCsvText.");
+        // Optionally set sampleData if no default data is loaded and valid
+        // setData(sampleData);
+    } else if (allDefaultData.length > 0) {
+      setRawData(allDefaultData);
+      setFilteredData(allDefaultData);
+    } else {
+      console.log("No default CSVs found or no data extracted. Initializing with sample data or empty as per logic.");
+      // setData(sampleData); // Or keep it empty if that's preferred when no files are found
+    }
+    setIsLoading(false);
+  };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -316,8 +473,8 @@ export default function Dashboard() {
             // Potentially show a user-friendly message here
         }
         // Decide if you want to replace or append the data
-        setData(parsedData); // Current: replaces data
-        // setData(prevData => [...prevData, ...parsedData]); // Alternative: appends data
+        setRawData(parsedData);
+        setFilteredData(parsedData);
 
       } catch (e) {
         console.error("Error processing manually uploaded file:", e);
@@ -330,18 +487,38 @@ export default function Dashboard() {
     fileInputRef.current?.click();
   };
 
-  const filteredData = data.filter(d => {
-    if (d && typeof d.commodity === 'string') {
-      return d.commodity.toLowerCase().includes(filter.toLowerCase());
+  // Function to handle sort request
+  const requestSort = (key: keyof CompanyData) => {
+    let direction: 'ascending' | 'descending' = 'ascending';
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'ascending') {
+      direction = 'descending';
     }
-    return false;
-  });
+    setSortConfig({ key, direction });
+  };
 
-  // Log filteredData before rendering
-  console.log("Filtered data passed to components:", filteredData);
-  console.log("CTGO data for chart:", filteredData.filter(d => d.company_name === "Contango ORE, Inc."));
-  // Assuming the company name for CDE is "Coeur Mining, Inc." - please adjust if different
-  console.log("CDE data for chart:", filteredData.filter(d => d.company_name === "Coeur Mining, Inc."));
+  // Function to handle column filter changes
+  const handleColumnFilterChange = (key: keyof CompanyData, value: string) => {
+    setColumnFilters(prev => ({ ...prev, [key]: value }));
+  };
+
+  // Function to open stock chart popup
+  const handleOpenStockChart = (ticker: string | null | undefined) => {
+    if (ticker) {
+      setStockChartTicker(ticker);
+      setShowStockChartPopup(true);
+    } else {
+      console.warn("Cannot open stock chart: Ticker is missing for the selected company.");
+      // Optionally, provide user feedback that ticker is missing
+    }
+  };
+
+  // Function to close stock chart popup
+  const handleCloseStockChart = () => {
+    setShowStockChartPopup(false);
+    setStockChartTicker(null);
+    setStockChartData([]); // Clear data when closing
+    setStockChartError(null);
+  };
 
   return (
     <div className="p-4 space-y-6">
@@ -352,8 +529,8 @@ export default function Dashboard() {
           <div className="flex gap-4 items-center">
             <Input
               placeholder="Filter by commodity (e.g. gold, copper)"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
               className="w-64"
             />
             <Input
@@ -407,23 +584,120 @@ export default function Dashboard() {
             <table className="w-full text-sm text-left">
               <thead>
                 <tr className="border-b">
-                  <th className="p-2">Company</th>
-                  <th className="p-2">Commodity</th>
-                  <th className="p-2">Stage</th>
-                  <th className="p-2">NPV (Post-Tax M USD)</th>
-                  <th className="p-2">Market Cap (M USD)</th>
-                  <th className="p-2">NPV/MC</th>
-                  <th className="p-2">IRR (Post-Tax %)</th>
-                  <th className="p-2">AISC (USD/oz Gold Eq.)</th>
-                  <th className="p-2">Resource Size</th>
-                  <th className="p-2">Avg. Annual Prod.</th>
-                  <th className="p-2">Mine Life (yrs)</th>
+                  <th className="p-2 cursor-pointer" onClick={() => requestSort('company_name')}>
+                    Company {sortConfig?.key === 'company_name' ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}
+                    <Input 
+                      placeholder="Filter..." 
+                      className="mt-1 text-xs p-1" 
+                      value={columnFilters.company_name || ''} 
+                      onChange={(e) => handleColumnFilterChange('company_name', e.target.value)}
+                      onClick={(e) => e.stopPropagation()} // Prevent sort when clicking input
+                    />
+                  </th>
+                  <th className="p-2 cursor-pointer" onClick={() => requestSort('commodity')}>
+                    Commodity {sortConfig?.key === 'commodity' ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}
+                    <Input 
+                      placeholder="Filter..." 
+                      className="mt-1 text-xs p-1" 
+                      value={columnFilters.commodity || ''} 
+                      onChange={(e) => handleColumnFilterChange('commodity', e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </th>
+                  <th className="p-2 cursor-pointer" onClick={() => requestSort('report_type')}>
+                    Stage {sortConfig?.key === 'report_type' ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}
+                    <Input 
+                      placeholder="Filter..." 
+                      className="mt-1 text-xs p-1" 
+                      value={columnFilters.report_type || ''} 
+                      onChange={(e) => handleColumnFilterChange('report_type', e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </th>
+                  <th className="p-2 cursor-pointer" onClick={() => requestSort('npv_post_tax_usd')}>
+                    NPV (Post-Tax M USD) {sortConfig?.key === 'npv_post_tax_usd' ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}
+                     <Input 
+                      placeholder="Filter..." 
+                      className="mt-1 text-xs p-1" 
+                      value={columnFilters.npv_post_tax_usd || ''} 
+                      onChange={(e) => handleColumnFilterChange('npv_post_tax_usd', e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </th>
+                  <th className="p-2 cursor-pointer" onClick={() => requestSort('market_cap')}>
+                    Market Cap (M USD) {sortConfig?.key === 'market_cap' ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}
+                    <Input 
+                      placeholder="Filter..." 
+                      className="mt-1 text-xs p-1" 
+                      value={columnFilters.market_cap || ''} 
+                      onChange={(e) => handleColumnFilterChange('market_cap', e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </th>
+                  <th className="p-2">NPV/MC</th> {/* Sorting for calculated field is more complex, skipping for now */}
+                  <th className="p-2 cursor-pointer" onClick={() => requestSort('irr_post_tax_percent')}>
+                    IRR (Post-Tax %) {sortConfig?.key === 'irr_post_tax_percent' ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}
+                     <Input 
+                      placeholder="Filter..." 
+                      className="mt-1 text-xs p-1" 
+                      value={columnFilters.irr_post_tax_percent || ''} 
+                      onChange={(e) => handleColumnFilterChange('irr_post_tax_percent', e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </th>
+                  <th className="p-2 cursor-pointer" onClick={() => requestSort('aisc_usd_per_ounce.gold_oz')}>
+                    AISC (USD/oz Gold Eq.) {sortConfig?.key === 'aisc_usd_per_ounce.gold_oz' ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}
+                    {/* Note: key for AISC might need to be 'aisc_usd_per_ounce' if 'aisc_usd_per_ounce.gold_oz' is too specific or not always present */}
+                     <Input 
+                      placeholder="Filter..." 
+                      className="mt-1 text-xs p-1" 
+                      value={columnFilters['aisc_usd_per_ounce.gold_oz'] || columnFilters.aisc_usd_per_ounce || ''}
+                      onChange={(e) => handleColumnFilterChange('aisc_usd_per_ounce.gold_oz', e.target.value)} // Or a generic AISC key
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </th>
+                  <th className="p-2 cursor-pointer" onClick={() => requestSort('mineral_resources')}>
+                    Resource Size {sortConfig?.key === 'mineral_resources' ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}
+                    {/* Filtering for complex formatted string like mineral_resources might be tricky with simple includes */}
+                    <Input 
+                      placeholder="Filter..." 
+                      className="mt-1 text-xs p-1" 
+                      value={columnFilters.mineral_resources || ''} 
+                      onChange={(e) => handleColumnFilterChange('mineral_resources', e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </th>
+                  <th className="p-2 cursor-pointer" onClick={() => requestSort('average_annual_production')}>
+                    Avg. Annual Prod. {sortConfig?.key === 'average_annual_production' ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}
+                    <Input 
+                      placeholder="Filter..." 
+                      className="mt-1 text-xs p-1" 
+                      value={columnFilters.average_annual_production || ''} 
+                      onChange={(e) => handleColumnFilterChange('average_annual_production', e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </th>
+                  <th className="p-2 cursor-pointer" onClick={() => requestSort('life_of_mine_years')}>
+                    Mine Life (yrs) {sortConfig?.key === 'life_of_mine_years' ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}
+                     <Input 
+                      placeholder="Filter..." 
+                      className="mt-1 text-xs p-1" 
+                      value={columnFilters.life_of_mine_years || ''} 
+                      onChange={(e) => handleColumnFilterChange('life_of_mine_years', e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {filteredData.map((d, i) => (
                   <tr key={i} className="border-b hover:bg-gray-50">
-                    <td className="p-2 whitespace-pre-wrap">{d.company_name || 'N/A'}</td>
+                    <td 
+                      className="p-2 whitespace-pre-wrap cursor-pointer text-blue-600 hover:underline"
+                      onClick={() => handleOpenStockChart(d.ticker)} // Make company name clickable
+                    >
+                      {d.company_name || 'N/A'}
+                    </td>
                     <td className="p-2 whitespace-pre-wrap">{d.commodity || 'N/A'}</td>
                     <td className="p-2 whitespace-pre-wrap">{d.report_type || 'N/A'}</td>
                     <td className="p-2 whitespace-pre-wrap">{typeof d.npv_post_tax_usd === 'number' ? d.npv_post_tax_usd.toLocaleString() : 'N/A'}</td>
@@ -445,6 +719,68 @@ export default function Dashboard() {
           </div>
         </CardContent>
       </Card>
+
+      {selectedCompany && (
+        <Card className="mt-4 p-4 col-span-1 md:col-span-2 lg:col-span-3 overflow-auto max-h-[80vh]">
+          <h3 className="text-xl font-semibold mb-2 text-blue-600">{selectedCompany.company_name || 'N/A'}</h3>
+          <p className="text-sm text-gray-500 mb-1">File: {selectedCompany.fileName || 'N/A'}</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 text-sm">
+            <p><strong>Ticker:</strong> {selectedCompany.ticker || 'N/A'}</p>
+            {/* Display yfinance data */}
+            {marketData && (
+              <>
+                <p><strong>Market Cap:</strong> {marketData.market_cap ? marketData.market_cap.toLocaleString() : 'N/A'}</p>
+                <p><strong>Total Cash:</strong> {marketData.total_cash ? marketData.total_cash.toLocaleString() : 'N/A'}</p>
+                <p><strong>Total Debt:</strong> {marketData.total_debt ? marketData.total_debt.toLocaleString() : 'N/A'}</p>
+                <p><strong>Shares Outstanding:</strong> {marketData.shares_outstanding ? marketData.shares_outstanding.toLocaleString() : 'N/A'}</p>
+              </>
+            )}
+            <p><strong>Report Type:</strong> {selectedCompany.report_type || 'N/A'}</p>
+            <p><strong>Commodity:</strong> {selectedCompany.commodity || 'N/A'}</p>
+            {/* Add more fields as needed */}
+          </div>
+        </Card>
+      )}
+
+      {/* Stock Chart Popup Modal */}
+      {showStockChartPopup && stockChartTicker && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+          onClick={handleCloseStockChart} // Close on overlay click
+        >
+          <Card 
+            className="bg-white p-6 rounded-lg shadow-xl max-w-3xl w-full h-auto max-h-[80vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()} // Prevent closing when clicking inside the card
+          >
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-semibold">Stock Price Chart: {stockChartTicker}</h3>
+              <Button onClick={handleCloseStockChart} variant="ghost" size="sm">X</Button>
+            </div>
+            {stockChartLoading && <p>Loading chart data...</p>}
+            {stockChartError && <p className="text-red-500">Error: {stockChartError}</p>}
+            {!stockChartLoading && !stockChartError && stockChartData.length > 0 && (
+              <ResponsiveContainer width="100%" height={400}>
+                <LineChart data={stockChartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis 
+                    dataKey="Date" 
+                    tickFormatter={(tick) => new Date(tick).toLocaleDateString('en-US', { month: 'short', year: 'numeric'})} 
+                  />
+                  <YAxis domain={['auto', 'auto']} />
+                  <Tooltip 
+                     labelFormatter={(label) => new Date(label).toLocaleDateString('en-US')}
+                     formatter={(value: number) => [value.toFixed(2), 'Price']}
+                  />
+                  <Line type="monotone" dataKey="Close" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+            {!stockChartLoading && !stockChartError && stockChartData.length === 0 && (
+              <p>No data available to display the chart.</p>
+            )}
+          </Card>
+        </div>
+      )}
     </div>
   );
 } 
